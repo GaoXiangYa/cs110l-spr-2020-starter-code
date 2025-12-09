@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::inferior::Inferior;
+use nix::sys::signal;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -38,6 +39,25 @@ impl Debugger {
                         // TODO (milestone 1): make the inferior run
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
+                        // self.inferior.as_mut().unwrap().wait(Some(signal));
+                        match self.inferior.as_mut().unwrap().continue_run(None) {
+                            Ok(status) => {
+                                match status {
+                                    crate::inferior::Status::Stopped(signal, _) => {
+                                        println!("Child stopped (signal {})", signal);
+                                    }
+                                    crate::inferior::Status::Exited(_) => {
+                                        println!("Child exited (status 0)");
+                                    }
+                                    crate::inferior::Status::Signaled(signal) => {
+                                        println!("Child Signaled (signal {})", signal);
+                                    },
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("{}", err);
+                            }
+                        }
                     } else {
                         println!("Error starting subprocess");
                     }
