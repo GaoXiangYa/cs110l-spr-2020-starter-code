@@ -3,6 +3,7 @@ use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
@@ -54,6 +55,11 @@ impl Inferior {
     pub fn continue_run(&self, signal: Option<Signal>) -> Result<Status, nix::Error> {
         let _ = nix::sys::ptrace::cont(self.pid(), signal);
         self.wait(None)
+    }
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        println!("Killing running inferior (pid {})", self.pid());
+        self.child.kill()
     }
 
     /// Calls waitpid on this inferior and returns a Status to indicate the state of the process

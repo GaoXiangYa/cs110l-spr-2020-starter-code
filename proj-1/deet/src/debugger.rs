@@ -1,8 +1,10 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::inferior::{Inferior, Status};
 use nix::sys::signal;
+use nix::unistd::alarm::set;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::error::Error;
 
 pub struct Debugger {
     target: String,
@@ -29,10 +31,34 @@ impl Debugger {
         }
     }
 
+    fn deal_status(result: Result<Status, nix::Error>) {
+        match result {
+            Ok(status) => match status {
+                crate::inferior::Status::Stopped(signal, _) => {
+                    println!("Child stopped (signal {})", signal);
+                }
+                crate::inferior::Status::Exited(_) => {
+                    println!("Child exited (status 0)");
+                }
+                crate::inferior::Status::Signaled(signal) => {
+                    println!("Child Signaled (signal {})", signal);
+                }
+            },
+            Err(err) => {
+                eprintln!("{}", err);
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+
+                    if let Some(mut inferior) = self.inferior.take() {
+                        let _ = inferior.kill();
+                    }
+
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
@@ -40,29 +66,23 @@ impl Debugger {
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
                         // self.inferior.as_mut().unwrap().wait(Some(signal));
-                        match self.inferior.as_mut().unwrap().continue_run(None) {
-                            Ok(status) => {
-                                match status {
-                                    crate::inferior::Status::Stopped(signal, _) => {
-                                        println!("Child stopped (signal {})", signal);
-                                    }
-                                    crate::inferior::Status::Exited(_) => {
-                                        println!("Child exited (status 0)");
-                                    }
-                                    crate::inferior::Status::Signaled(signal) => {
-                                        println!("Child Signaled (signal {})", signal);
-                                    },
-                                }
-                            }
-                            Err(err) => {
-                                eprintln!("{}", err);
-                            }
-                        }
+                        let result = self.inferior.as_mut().unwrap().continue_run(None);
+                        Self::deal_status(result);
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    if self.inferior.is_none() {
+                        eprintln!("Error no subprocess is running!");
+                    }
+                    let result = self.inferior.as_mut().unwrap().continue_run(None);
+                    Self::deal_status(result);
+                }
                 DebuggerCommand::Quit => {
+                    if let Some(mut inferior) = self.inferior.take() {
+                        let _ = inferior.kill();
+                    }
                     return;
                 }
             }
