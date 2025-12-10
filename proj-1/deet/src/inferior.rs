@@ -1,3 +1,4 @@
+use addr2line::gimli::Register;
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::signal::Signal;
@@ -60,6 +61,18 @@ impl Inferior {
     pub fn kill(&mut self) -> io::Result<()> {
         println!("Killing running inferior (pid {})", self.pid());
         self.child.kill()
+    }
+
+    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
+        match ptrace::getregs(self.pid()) {
+            Ok(reg) => {
+                println!("%rip register {:#x}",reg.rip);
+            },
+            Err(err) => {
+                eprintln!("{}", err);
+            }
+        }
+        Ok(())
     }
 
     /// Calls waitpid on this inferior and returns a Status to indicate the state of the process

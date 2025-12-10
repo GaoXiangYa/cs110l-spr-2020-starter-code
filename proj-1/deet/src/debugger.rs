@@ -1,4 +1,5 @@
 use crate::debugger_command::DebuggerCommand;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::{Inferior, Status};
 use nix::sys::signal;
 use nix::unistd::alarm::set;
@@ -17,9 +18,19 @@ impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
-
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
-        let mut readline = Editor::<()>::new();
+        // let mut readline = debug_data.get_line_from_addr(curr_addr);
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
 
@@ -54,7 +65,6 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
-
                     if let Some(mut inferior) = self.inferior.take() {
                         let _ = inferior.kill();
                     }
@@ -72,6 +82,7 @@ impl Debugger {
                         println!("Error starting subprocess");
                     }
                 }
+
                 DebuggerCommand::Continue => {
                     if self.inferior.is_none() {
                         eprintln!("Error no subprocess is running!");
@@ -79,6 +90,11 @@ impl Debugger {
                     let result = self.inferior.as_mut().unwrap().continue_run(None);
                     Self::deal_status(result);
                 }
+
+                DebuggerCommand::Backtrace => {
+                    let _ = self.inferior.as_mut().unwrap().print_backtrace();
+                }
+
                 DebuggerCommand::Quit => {
                     if let Some(mut inferior) = self.inferior.take() {
                         let _ = inferior.kill();
