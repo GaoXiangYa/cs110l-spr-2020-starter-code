@@ -4,10 +4,13 @@ use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::convert::TryInto;
 use std::io;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
+
+use crate::dwarf_data::DwarfData;
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -63,11 +66,30 @@ impl Inferior {
         self.child.kill()
     }
 
-    pub fn print_backtrace(&self) -> Result<(), nix::Error> {
+    pub fn print_backtrace(&self, debug_data: &Option<DwarfData>) -> Result<(), nix::Error> {
         match ptrace::getregs(self.pid()) {
             Ok(reg) => {
-                println!("%rip register {:#x}",reg.rip);
-            },
+                match debug_data.as_ref() {
+                    Some(data) => {
+                        let mut rip = reg.rip.try_into().unwrap();
+                        let mut rbp = reg.rbp.try_into().unwrap();
+                        loop {
+                            let func_line = data.get_line_from_addr(rip);
+                            let func_name = data.get_function_from_addr(rbp);
+                            println!("{} ({})", func_name.as_ref().unwrap(), func_line.unwrap());
+                            if func_name.as_ref().unwrap() == "main" {
+                                break;
+                            }
+                            rip = ptrace::read(self.pid(), (rip + 8) as ptrace::AddressType)? as usize;
+                            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+                        }
+                        
+                    },
+                    None => {
+                        return Err(nix::Error::UnsupportedOperation);
+                    }
+                }
+            }
             Err(err) => {
                 eprintln!("{}", err);
             }

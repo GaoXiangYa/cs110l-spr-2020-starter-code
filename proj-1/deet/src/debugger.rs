@@ -11,6 +11,7 @@ pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
+    debug_data: Option<DwarfData>,
     inferior: Option<Inferior>,
 }
 
@@ -29,15 +30,16 @@ impl Debugger {
                 std::process::exit(1);
             }
         };
+
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
-        // let mut readline = debug_data.get_line_from_addr(curr_addr);
+        let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
-        let _ = readline.load_history(&history_path);
 
         Debugger {
             target: target.to_string(),
             history_path,
             readline,
+            debug_data: Some(debug_data),
             inferior: None,
         }
     }
@@ -92,7 +94,7 @@ impl Debugger {
                 }
 
                 DebuggerCommand::Backtrace => {
-                    let _ = self.inferior.as_mut().unwrap().print_backtrace();
+                    let _ = self.inferior.as_mut().unwrap().print_backtrace(&self.debug_data);
                 }
 
                 DebuggerCommand::Quit => {
