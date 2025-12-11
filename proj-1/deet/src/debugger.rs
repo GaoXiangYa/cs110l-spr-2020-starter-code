@@ -5,6 +5,7 @@ use nix::sys::signal;
 use nix::unistd::alarm::set;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::collections::HashMap;
 use std::error::Error;
 
 pub struct Debugger {
@@ -13,6 +14,8 @@ pub struct Debugger {
     readline: Editor<()>,
     debug_data: Option<DwarfData>,
     inferior: Option<Inferior>,
+    breakpoints_list: HashMap<i64, usize>,
+    breakpoint_count: i64,
 }
 
 impl Debugger {
@@ -31,6 +34,8 @@ impl Debugger {
             }
         };
 
+        debug_data.print();
+
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
@@ -41,7 +46,18 @@ impl Debugger {
             readline,
             debug_data: Some(debug_data),
             inferior: None,
+            breakpoints_list: HashMap::new(),
+            breakpoint_count: 0,
         }
+    }
+
+    fn parse_address(addr: &str) -> Option<usize> {
+        let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+            &addr[2..]
+        } else {
+            &addr
+        };
+        usize::from_str_radix(addr_without_0x, 16).ok()
     }
 
     fn deal_status(&self, result: Result<Status, nix::Error>) {
@@ -85,6 +101,9 @@ impl Debugger {
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
                         // self.inferior.as_mut().unwrap().wait(Some(signal));
+                        for (_, addr) in self.breakpoints_list.iter() {
+                            let _ = self.inferior.as_mut().unwrap().write_byte(*addr, 0xcc);
+                        }
                         let result = self.inferior.as_mut().unwrap().continue_run(None);
                         self.deal_status(result);
                     } else {
@@ -106,6 +125,16 @@ impl Debugger {
                         .as_mut()
                         .unwrap()
                         .print_backtrace(&self.debug_data);
+                }
+
+                DebuggerCommand::BreakPoint(point_addr) => {
+                    let addr = Self::parse_address(&point_addr).expect("invalied address");
+                    println!("Set breakpoint {} at {}", self.breakpoint_count, point_addr);
+                    self.breakpoints_list.insert(self.breakpoint_count, addr);
+                    self.breakpoint_count += 1;
+                    if self.inferior.is_some() {
+                        let _ = self.inferior.as_mut().unwrap().write_byte(addr, 0xcc);
+                    }
                 }
 
                 DebuggerCommand::Quit => {
