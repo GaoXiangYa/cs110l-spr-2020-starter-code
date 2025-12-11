@@ -68,28 +68,30 @@ impl Inferior {
 
     pub fn print_backtrace(&self, debug_data: &Option<DwarfData>) -> Result<(), nix::Error> {
         match ptrace::getregs(self.pid()) {
-            Ok(reg) => {
-                match debug_data.as_ref() {
-                    Some(data) => {
-                        let mut rip = reg.rip.try_into().unwrap();
-                        let mut rbp = reg.rbp.try_into().unwrap();
-                        loop {
-                            let func_line = data.get_line_from_addr(rip);
-                            let func_name = data.get_function_from_addr(rbp);
-                            println!("{} ({})", func_name.as_ref().unwrap(), func_line.unwrap());
-                            if func_name.as_ref().unwrap() == "main" {
-                                break;
-                            }
-                            rip = ptrace::read(self.pid(), (rip + 8) as ptrace::AddressType)? as usize;
-                            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+            Ok(reg) => match debug_data.as_ref() {
+                Some(data) => {
+                    let mut rip = reg.rip.try_into().unwrap();
+                    let mut rbp = reg.rbp.try_into().unwrap();
+
+                    loop {
+                        let func_line = data.get_line_from_addr(rip);
+                        let func_name = data.get_function_from_addr(rip);
+                        println!(
+                            "{} ({})",
+                            func_name.as_ref().unwrap(),
+                            func_line.as_ref().unwrap()
+                        );
+                        if func_name.as_ref().unwrap() == "main" {
+                            break;
                         }
-                        
-                    },
-                    None => {
-                        return Err(nix::Error::UnsupportedOperation);
+                        rip = ptrace::read(self.pid(), (rbp + 8) as ptrace::AddressType)? as usize;
+                        rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
                     }
                 }
-            }
+                None => {
+                    return Err(nix::Error::UnsupportedOperation);
+                }
+            },
             Err(err) => {
                 eprintln!("{}", err);
             }
