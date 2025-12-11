@@ -44,11 +44,18 @@ impl Debugger {
         }
     }
 
-    fn deal_status(result: Result<Status, nix::Error>) {
+    fn deal_status(&self, result: Result<Status, nix::Error>) {
         match result {
             Ok(status) => match status {
-                crate::inferior::Status::Stopped(signal, _) => {
+                crate::inferior::Status::Stopped(signal, rip) => {
                     println!("Child stopped (signal {})", signal);
+                    if let Some(data) = self.debug_data.as_ref() {
+                        let func_name = data.get_function_from_addr(rip).expect("invalid addr");
+                        let func_line = data.get_line_from_addr(rip).expect("invalid addr");
+                        println!("Stopped at {} ({})", func_name, func_line);
+                    } else {
+                        eprintln!("invalid debug data!");
+                    }
                 }
                 crate::inferior::Status::Exited(_) => {
                     println!("Child exited (status 0)");
@@ -79,7 +86,7 @@ impl Debugger {
                         // to the Inferior object
                         // self.inferior.as_mut().unwrap().wait(Some(signal));
                         let result = self.inferior.as_mut().unwrap().continue_run(None);
-                        Self::deal_status(result);
+                        self.deal_status(result);
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -90,11 +97,15 @@ impl Debugger {
                         eprintln!("Error no subprocess is running!");
                     }
                     let result = self.inferior.as_mut().unwrap().continue_run(None);
-                    Self::deal_status(result);
+                    self.deal_status(result);
                 }
 
                 DebuggerCommand::Backtrace => {
-                    let _ = self.inferior.as_mut().unwrap().print_backtrace(&self.debug_data);
+                    let _ = self
+                        .inferior
+                        .as_mut()
+                        .unwrap()
+                        .print_backtrace(&self.debug_data);
                 }
 
                 DebuggerCommand::Quit => {
