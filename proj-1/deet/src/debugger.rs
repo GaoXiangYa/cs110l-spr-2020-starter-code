@@ -1,12 +1,18 @@
 use crate::debugger_command::DebuggerCommand;
 use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::{Inferior, Status};
-use nix::sys::signal;
-use nix::unistd::alarm::set;
+use nix::sys::ptrace;
+use nix::sys::wait::waitpid;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use std::collections::HashMap;
-use std::error::Error;
+
+#[derive(Clone)]
+struct Breakpoint {
+    id: i64,
+    addr: usize,
+    orig_byte: u8,
+}
 
 pub struct Debugger {
     target: String,
@@ -14,8 +20,10 @@ pub struct Debugger {
     readline: Editor<()>,
     debug_data: Option<DwarfData>,
     inferior: Option<Inferior>,
-    breakpoints_list: HashMap<i64, usize>,
+    breakpoints_list: Vec<(i64, usize)>,
+    breakpoints_map: HashMap<usize, Breakpoint>,
     breakpoint_count: i64,
+    current_result: Result<Status, nix::Error>,
 }
 
 impl Debugger {
@@ -39,6 +47,7 @@ impl Debugger {
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
+        let _ = readline.load_history(&history_path);
 
         Debugger {
             target: target.to_string(),
@@ -46,8 +55,10 @@ impl Debugger {
             readline,
             debug_data: Some(debug_data),
             inferior: None,
-            breakpoints_list: HashMap::new(),
+            breakpoints_list: Vec::new(),
+            breakpoints_map: HashMap::new(),
             breakpoint_count: 0,
+            current_result: Ok(Status::Exited(0)),
         }
     }
 
@@ -60,10 +71,10 @@ impl Debugger {
         usize::from_str_radix(addr_without_0x, 16).ok()
     }
 
-    fn deal_status(&self, result: Result<Status, nix::Error>) {
+    fn deal_status(&self, result: &Result<Status, nix::Error>) {
         match result {
             Ok(status) => match status {
-                crate::inferior::Status::Stopped(signal, rip) => {
+                crate::inferior::Status::Stopped(_, signal, mut rip) => {
                     println!("Child stopped (signal {})", signal);
                     if let Some(data) = self.debug_data.as_ref() {
                         let func_name = data.get_function_from_addr(rip).expect("invalid addr");
@@ -86,6 +97,20 @@ impl Debugger {
         }
     }
 
+    fn set_breakpoint(&mut self, point_id: i64, addr: usize) -> Option<Breakpoint> {
+        let orig_byte = self
+            .inferior
+            .as_mut()
+            .unwrap()
+            .write_byte(addr, 0xcc)
+            .ok()?;
+        Some(Breakpoint {
+            id: point_id,
+            addr: addr,
+            orig_byte: orig_byte,
+        })
+    }
+
     pub fn run(&mut self) {
         loop {
             match self.get_next_command() {
@@ -100,12 +125,16 @@ impl Debugger {
                         // TODO (milestone 1): make the inferior run
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
-                        // self.inferior.as_mut().unwrap().wait(Some(signal));
-                        for (_, addr) in self.breakpoints_list.iter() {
-                            let _ = self.inferior.as_mut().unwrap().write_byte(*addr, 0xcc);
+                        for idx in 0..self.breakpoints_list.len() {
+                            let (point_id, addr) = self.breakpoints_list[idx];
+                            let breakpoint = self
+                                .set_breakpoint(point_id, addr)
+                                .expect("set breakpoint failed!");
+                            self.breakpoints_map.insert(addr, breakpoint);
                         }
-                        let result = self.inferior.as_mut().unwrap().continue_run(None);
-                        self.deal_status(result);
+
+                        self.current_result = self.inferior.as_mut().unwrap().continue_run(None);
+                        self.deal_status(&self.current_result);
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -115,8 +144,34 @@ impl Debugger {
                     if self.inferior.is_none() {
                         eprintln!("Error no subprocess is running!");
                     }
-                    let result = self.inferior.as_mut().unwrap().continue_run(None);
-                    self.deal_status(result);
+                    if self.current_result.is_ok() {
+                        let status = self
+                            .current_result
+                            .as_ref()
+                            .ok()
+                            .expect("get current result failed!");
+                        if let Status::Stopped(pid, _signal, rip) = status {
+                            let stopped_rip = rip - 1;
+                            let breakpoint = &self.breakpoints_map[&stopped_rip];
+                            // restore old value
+                            let _ = self
+                                .inferior
+                                .as_mut()
+                                .unwrap()
+                                .write_byte(stopped_rip, breakpoint.orig_byte);
+
+                            let _ = ptrace::step(*pid, None);
+                            let _ = waitpid(*pid, None);
+
+                            let _ = self
+                                .inferior
+                                .as_mut()
+                                .unwrap()
+                                .write_byte(stopped_rip, 0xcc);
+                        }
+                    }
+                    self.current_result = self.inferior.as_mut().unwrap().continue_run(None);
+                    self.deal_status(&self.current_result);
                 }
 
                 DebuggerCommand::Backtrace => {
@@ -128,13 +183,41 @@ impl Debugger {
                 }
 
                 DebuggerCommand::BreakPoint(point_addr) => {
-                    let addr = Self::parse_address(&point_addr).expect("invalied address");
-                    println!("Set breakpoint {} at {}", self.breakpoint_count, point_addr);
-                    self.breakpoints_list.insert(self.breakpoint_count, addr);
-                    self.breakpoint_count += 1;
-                    if self.inferior.is_some() {
-                        let _ = self.inferior.as_mut().unwrap().write_byte(addr, 0xcc);
+                    let mut addr: usize = 0;
+                    if point_addr.to_lowercase().starts_with("0x") {
+                        addr = Self::parse_address(&point_addr).expect("invalied address");
+                        println!("Set breakpoint {} at {}", self.breakpoint_count, point_addr);
+                    } else if point_addr.chars().all(|char| char.is_ascii_digit()) {
+                        let line_number = point_addr
+                            .parse::<usize>()
+                            .expect("failed to parse addr to line number");
+                        addr = self
+                            .debug_data
+                            .as_ref()
+                            .unwrap()
+                            .get_addr_for_line(None, line_number)
+                            .expect("failed to get addr for line");
+
+                        println!("Set breakpoint {} at {:x}", self.breakpoint_count, addr);
+                    } else {
+                        addr = self
+                            .debug_data
+                            .as_ref()
+                            .unwrap()
+                            .get_addr_for_function(None, &point_addr)
+                            .expect("faile to get addr for cuntion");
+
+                        println!("Set breakpoint {} at {:x}", self.breakpoint_count, addr);
                     }
+
+                    self.breakpoints_list.push((self.breakpoint_count, addr));
+                    if self.inferior.is_some() {
+                        let breakpoint = self
+                            .set_breakpoint(self.breakpoint_count, addr)
+                            .expect("set_breakpoint failed!");
+                        self.breakpoints_map.insert(addr, breakpoint);
+                    }
+                    self.breakpoint_count += 1;
                 }
 
                 DebuggerCommand::Quit => {

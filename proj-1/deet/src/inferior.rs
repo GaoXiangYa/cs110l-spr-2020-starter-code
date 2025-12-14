@@ -15,7 +15,7 @@ use crate::dwarf_data::DwarfData;
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
     /// current instruction pointer that it is stopped at.
-    Stopped(signal::Signal, usize),
+    Stopped(nix::unistd::Pid, signal::Signal, usize),
 
     /// Indicates inferior exited normally. Contains the exit status code.
     Exited(i32),
@@ -124,9 +124,9 @@ impl Inferior {
         Ok(match waitpid(self.pid(), options)? {
             WaitStatus::Exited(_pid, exit_code) => Status::Exited(exit_code),
             WaitStatus::Signaled(_pid, signal, _core_dumped) => Status::Signaled(signal),
-            WaitStatus::Stopped(_pid, signal) => {
+            WaitStatus::Stopped(pid, signal) => {
                 let regs = ptrace::getregs(self.pid())?;
-                Status::Stopped(signal, regs.rip as usize)
+                Status::Stopped(pid, signal, regs.rip as usize)
             }
             other => panic!("waitpid returned unexpected status: {:?}", other),
         })
