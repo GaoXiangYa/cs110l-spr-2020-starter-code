@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Condvar};
 #[allow(unused_imports)]
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -64,6 +64,45 @@ fn get_input_numbers() -> VecDeque<u32> {
         }
     }
     numbers
+}
+
+struct Queue {
+    queue: Mutex<VecDeque<u32>>,
+    cv: Condvar,
+}
+
+impl Queue {
+    fn new() -> Self{
+        Queue{queue: Mutex::new(VecDeque::<u32>::new()), cv: Condvar::new()}
+    }
+
+    fn push_back(&mut self, val: u32) {
+        self.queue.lock().as_mut().unwrap().push_back(val);
+        self.cv.notify_one();
+    }
+
+    fn pop_front(&mut self) -> u32 {
+        if self.queue.lock().as_ref().unwrap().is_empty() {
+            return 0;
+        }
+        0
+    }
+}
+
+struct  ThreadPool {
+    num_threads: usize,
+    workers: Vec<thread::JoinHandle<()>>,
+}
+
+impl ThreadPool {
+    fn new(num_threads: usize) {
+        let mut workers = Vec::with_capacity(num_threads);
+        for i in 0..num_threads {
+            workers = thread::spawn(|| {
+
+            });
+        } 
+    }
 }
 
 fn main() {
