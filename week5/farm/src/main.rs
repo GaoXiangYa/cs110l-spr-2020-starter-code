@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Condvar};
+use std::collections::VecDeque;
 #[allow(unused_imports)]
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -66,56 +66,39 @@ fn get_input_numbers() -> VecDeque<u32> {
     numbers
 }
 
-struct Queue {
-    queue: Mutex<VecDeque<u32>>,
-    cv: Condvar,
-}
-
-impl Queue {
-    fn new() -> Self{
-        Queue{queue: Mutex::new(VecDeque::<u32>::new()), cv: Condvar::new()}
-    }
-
-    fn push_back(&mut self, val: u32) {
-        self.queue.lock().as_mut().unwrap().push_back(val);
-        self.cv.notify_one();
-    }
-
-    fn pop_front(&mut self) -> u32 {
-        if self.queue.lock().as_ref().unwrap().is_empty() {
-            return 0;
-        }
-        0
-    }
-}
-
-struct  ThreadPool {
-    num_threads: usize,
-    workers: Vec<thread::JoinHandle<()>>,
-}
-
-impl ThreadPool {
-    fn new(num_threads: usize) {
-        let mut workers = Vec::with_capacity(num_threads);
-        for i in 0..num_threads {
-            workers = thread::spawn(|| {
-
-            });
-        } 
-    }
-}
-
 fn main() {
     let num_threads = num_cpus::get();
     println!("Farm starting on {} CPUs", num_threads);
     let start = Instant::now();
 
     // TODO: call get_input_numbers() and store a queue of numbers to factor
+    let queue = get_input_numbers();
+    let safe_queue: Arc<Mutex<VecDeque<u32>>> = Arc::new(Mutex::new(queue));
 
     // TODO: spawn `num_threads` threads, each of which pops numbers off the queue and calls
     // factor_number() until the queue is empty
+    let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
+    for _ in 0..num_threads {
+        let q = Arc::clone(&safe_queue);
+        workers.push(thread::spawn(move || loop {
+            let num = {
+                let mut lock = q.lock().unwrap();
+                lock.pop_front()
+            };
+            match num {
+                Some(n) => {
+                    factor_number(n);
+                }
+                None => {
+                    break;
+                }
+            }
+        }));
+    }
 
     // TODO: join all the threads you created
-
+    for t in workers {
+        let _ = t.join();
+    }
     println!("Total execution time: {:?}", start.elapsed());
 }
