@@ -1,6 +1,6 @@
 use std::cmp::min;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 const MAX_HEADERS_SIZE: usize = 8000;
 const MAX_BODY_SIZE: usize = 10000000;
@@ -103,7 +103,7 @@ fn parse_request(buffer: &[u8]) -> Result<Option<(http::Request<Vec<u8>>, usize)
 /// Returns Ok(http::Request) if a valid request is received, or Error if not.
 ///
 /// You will need to modify this function in Milestone 2.
-fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
+async fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
     // Try reading the headers from the request. We may not receive all the headers in one shot
     // (e.g. we might receive the first few bytes of a request, and then the rest follows later).
     // Try parsing repeatedly until we read a valid HTTP request
@@ -111,9 +111,13 @@ fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error>
     let mut bytes_read = 0;
     loop {
         // Read bytes from the connection into the buffer, starting at position bytes_read
-        let new_bytes = stream
-            .read(&mut request_buffer[bytes_read..])
-            .or_else(|err| Err(Error::ConnectionError(err)))?;
+        let new_bytes = match stream.read(&mut request_buffer[bytes_read..]).await {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("failed to read from stream; err = {:?}", e);
+                return Err(Error::IncompleteRequest(bytes_read));
+            }
+        };
         if new_bytes == 0 {
             // We didn't manage to read a complete request
             return Err(Error::IncompleteRequest(bytes_read));
