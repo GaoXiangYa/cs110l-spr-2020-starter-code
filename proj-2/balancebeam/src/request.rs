@@ -114,7 +114,7 @@ async fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, 
         let new_bytes = match stream.read(&mut request_buffer[bytes_read..]).await {
             Ok(n) => n,
             Err(e) => {
-                eprintln!("failed to read from stream; err = {:?}", e);
+                eprintln!("failed to read headers from stream; err = {:?}", e);
                 return Err(Error::IncompleteRequest(bytes_read));
             }
         };
@@ -143,7 +143,7 @@ async fn read_headers(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, 
 /// returns Ok(()) if successful, or Err(Error) if Content-Length bytes couldn't be read.
 ///
 /// You will need to modify this function in Milestone 2.
-fn read_body(
+async fn read_body(
     stream: &mut TcpStream,
     request: &mut http::Request<Vec<u8>>,
     content_length: usize,
@@ -153,9 +153,13 @@ fn read_body(
         // Read up to 512 bytes at a time. (If the client only sent a small body, then only allocate
         // space to read that body.)
         let mut buffer = vec![0_u8; min(512, content_length)];
-        let bytes_read = stream
-            .read(&mut buffer)
-            .or_else(|err| Err(Error::ConnectionError(err)))?;
+        let bytes_read = match stream.read(&mut buffer).await {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("failed to read body from stream; err = {:?}", e);
+                return Err(Error::InvalidContentLength);
+            }
+        };
 
         // Make sure the client is still sending us bytes
         if bytes_read == 0 {
@@ -186,15 +190,15 @@ fn read_body(
 /// closes the connection prematurely or sends an invalid request.
 ///
 /// You will need to modify this function in Milestone 2.
-pub fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
+pub async fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>, Error> {
     // Read headers
-    let mut request = read_headers(stream)?;
+    let mut request = read_headers(stream).await?;
     // Read body if the client supplied the Content-Length header (which it does for POST requests)
     if let Some(content_length) = get_content_length(&request)? {
         if content_length > MAX_BODY_SIZE {
             return Err(Error::RequestBodyTooLarge);
         } else {
-            read_body(stream, &mut request, content_length)?;
+            read_body(stream, &mut request, content_length).await?;
         }
     }
     Ok(request)
@@ -203,20 +207,24 @@ pub fn read_from_stream(stream: &mut TcpStream) -> Result<http::Request<Vec<u8>>
 /// This function serializes a request to bytes and writes those bytes to the provided stream.
 ///
 /// You will need to modify this function in Milestone 2.
-pub fn write_to_stream(
+pub async fn write_to_stream(
     request: &http::Request<Vec<u8>>,
     stream: &mut TcpStream,
 ) -> Result<(), std::io::Error> {
-    stream.write(&format_request_line(request).into_bytes())?;
-    stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+    stream
+        .write(&format_request_line(request).into_bytes())
+        .await?;
+    stream.write(&['\r' as u8, '\n' as u8]).await?; // \r\n
     for (header_name, header_value) in request.headers() {
-        stream.write(&format!("{}: ", header_name).as_bytes())?;
-        stream.write(header_value.as_bytes())?;
-        stream.write(&['\r' as u8, '\n' as u8])?; // \r\n
+        stream
+            .write(&format!("{}: ", header_name).as_bytes())
+            .await?;
+        stream.write(header_value.as_bytes()).await?;
+        stream.write(&['\r' as u8, '\n' as u8]).await?; // \r\n
     }
-    stream.write(&['\r' as u8, '\n' as u8])?;
+    stream.write(&['\r' as u8, '\n' as u8]).await?;
     if request.body().len() > 0 {
-        stream.write(request.body())?;
+        stream.write(request.body()).await?;
     }
     Ok(())
 }
