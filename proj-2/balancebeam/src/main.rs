@@ -3,7 +3,13 @@ mod response;
 
 use clap::Parser;
 use rand::{Rng, SeedableRng};
-use std::net::{TcpListener, TcpStream};
+use std::{env, process, thread};
+use std::{
+    net::{TcpListener, TcpStream},
+    sync::Arc,
+};
+use threadpool::ThreadPool;
+use tokio::stream;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -72,17 +78,23 @@ fn main() {
     log::info!("Listening for requests on {}", options.bind);
 
     // Handle incoming connections
-    let state = ProxyState {
+    let state = Arc::new(ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-    };
+    });
+
+    let num_threads = num_cpus::get();
+    let thread_pool = ThreadPool::new(num_threads);
+
     for stream in listener.incoming() {
-        if let Ok(stream) = stream {
-            // Handle the connection!
-            handle_connection(stream, &state);
-        }
+        let shared_state = state.clone();
+        thread_pool.execute(move || {
+            if let Ok(stream) = stream {
+                handle_connection(stream, &shared_state);
+            }
+        });
     }
 }
 
