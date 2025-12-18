@@ -3,9 +3,13 @@ mod response;
 
 use clap::Parser;
 use rand::{Rng, SeedableRng};
+use std::ptr::read;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
+use tokio::io::Interest;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -75,12 +79,12 @@ async fn main() {
     log::info!("Listening for requests on {}", options.bind);
 
     // Handle incoming connections
-    let state = Arc::new(ProxyState {
+    let state = Arc::new(RwLock::new(ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-    });
+    }));
 
     while let Ok((stream, _socked_addr)) = listener.accept().await {
         let shared_state = state.clone();
@@ -90,12 +94,53 @@ async fn main() {
     }
 }
 
-async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
+async fn check_by_ready(stream: &mut TcpStream) -> bool {
+    let ready = stream.ready(Interest::READABLE | Interest::WRITABLE).await;
+    match ready {
+        Ok(ready) => return ready.is_readable() | ready.is_writable(),
+        Err(_) => return false,
+    }
+
+    // match stream.take_error() {
+    // Ok(None) => true,
+    // _ => false,
+    // }
+}
+
+async fn read_state(state: &RwLock<ProxyState>) -> (usize, String) {
+    let read_lock = state.read().await;
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0..state.upstream_addresses.len());
-    let upstream_ip = &state.upstream_addresses[upstream_idx];
-    TcpStream::connect(upstream_ip).await
+    let upstream_idx = rng.gen_range(0..read_lock.upstream_addresses.len());
+    let upstream_ip = read_lock.upstream_addresses[upstream_idx].clone();
+    log::debug!("upstream size = {}\n", read_lock.upstream_addresses.len());
+    (upstream_idx, upstream_ip)
+}
+
+async fn write_state(state: &RwLock<ProxyState>, upstream_idx: usize) {
+    let mut write_lock = state.write().await;
+    log::info!(
+        "Upstream {} is down, removed from upstream list",
+        upstream_idx
+    );
+    write_lock.upstream_addresses.remove(upstream_idx);
+}
+
+async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
+    let (mut upstream_idx, mut upstream_ip) = read_state(state).await;
     // TODO: implement failover (milestone 3)
+    let stream = TcpStream::connect(upstream_ip).await;
+    let ret = match stream {
+        Ok(stream) => stream,
+        Err(_) => {
+            write_state(state, upstream_idx).await;
+            (upstream_idx, upstream_ip) = read_state(state).await;
+            let new_stream = TcpStream::connect(upstream_ip).await?;
+            log::info!("Pick activate upstream {}\n", upstream_idx);
+            new_stream
+        }
+    };
+
+    Ok(ret)
 }
 
 async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Vec<u8>>) {
@@ -111,7 +156,7 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
+async fn handle_connection(mut client_conn: TcpStream, state: &RwLock<ProxyState>) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
@@ -119,7 +164,10 @@ async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     let mut upstream_conn = match connect_to_upstream(state).await {
         Ok(stream) => stream,
         Err(_error) => {
+            // connect_to_upstream(state).await?
             let response = response::make_http_error(http::StatusCode::BAD_GATEWAY);
+            // current stream is died we need to choose another upstream
+            log::debug!("Failed to connect to upstream server");
             send_response(&mut client_conn, &response).await;
             return;
         }
