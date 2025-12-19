@@ -49,6 +49,8 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
+    /// Failed servers
+    failed_upstream_addresses: Vec<String>,
 }
 
 #[tokio::main]
@@ -84,6 +86,7 @@ async fn main() {
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
+        failed_upstream_addresses:  Vec::new(),
     }));
 
     while let Ok((stream, _socked_addr)) = listener.accept().await {
@@ -94,18 +97,6 @@ async fn main() {
     }
 }
 
-async fn check_by_ready(stream: &mut TcpStream) -> bool {
-    let ready = stream.ready(Interest::READABLE | Interest::WRITABLE).await;
-    match ready {
-        Ok(ready) => return ready.is_readable() | ready.is_writable(),
-        Err(_) => return false,
-    }
-
-    // match stream.take_error() {
-    // Ok(None) => true,
-    // _ => false,
-    // }
-}
 
 async fn read_state(state: &RwLock<ProxyState>) -> (usize, String) {
     let read_lock = state.read().await;
@@ -122,7 +113,8 @@ async fn write_state(state: &RwLock<ProxyState>, upstream_idx: usize) {
         "Upstream {} is down, removed from upstream list",
         upstream_idx
     );
-    write_lock.upstream_addresses.remove(upstream_idx);
+    let failed_upstream = write_lock.upstream_addresses.remove(upstream_idx);
+    write_lock.failed_upstream_addresses.push(failed_upstream);
 }
 
 async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
