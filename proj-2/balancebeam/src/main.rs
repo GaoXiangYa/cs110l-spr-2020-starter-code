@@ -49,8 +49,8 @@ struct ProxyState {
     max_requests_per_minute: usize,
     /// Addresses of servers that we are proxying to
     upstream_addresses: Vec<String>,
-    /// Failed servers
-    failed_upstream_addresses: Vec<String>,
+    /// Active servers
+    active_upstream_addresses: Arc::<RwLock<Vec<String>>>,
 }
 
 #[tokio::main]
@@ -81,13 +81,17 @@ async fn main() {
     log::info!("Listening for requests on {}", options.bind);
 
     // Handle incoming connections
-    let state = Arc::new(RwLock::new(ProxyState {
+    let state = Arc::new(ProxyState {
         upstream_addresses: options.upstream,
         active_health_check_interval: options.active_health_check_interval,
         active_health_check_path: options.active_health_check_path,
         max_requests_per_minute: options.max_requests_per_minute,
-        failed_upstream_addresses:  Vec::new(),
-    }));
+        active_upstream_addresses:  Arc::new(RwLock::new(Vec::new())),
+    });
+
+    // for upstream in options.upstream {
+    //     state.write().await.upstream_addresses.push(Arc::new(RwLock::new(upstream)));
+    // }
 
     while let Ok((stream, _socked_addr)) = listener.accept().await {
         let shared_state = state.clone();
@@ -97,27 +101,34 @@ async fn main() {
     }
 }
 
+async fn health_check(state: &ProxyState) {
+    loop {
+        for upstream in state.upstream_addresses {
 
-async fn read_state(state: &RwLock<ProxyState>) -> (usize, String) {
-    let read_lock = state.read().await;
-    let mut rng = rand::rngs::StdRng::from_entropy();
-    let upstream_idx = rng.gen_range(0..read_lock.upstream_addresses.len());
-    let upstream_ip = read_lock.upstream_addresses[upstream_idx].clone();
-    log::debug!("upstream size = {}\n", read_lock.upstream_addresses.len());
-    (upstream_idx, upstream_ip)
+        }
+    }
 }
 
-async fn write_state(state: &RwLock<ProxyState>, upstream_idx: usize) {
-    let mut write_lock = state.write().await;
-    log::info!(
-        "Upstream {} is down, removed from upstream list",
-        upstream_idx
-    );
-    let failed_upstream = write_lock.upstream_addresses.remove(upstream_idx);
-    write_lock.failed_upstream_addresses.push(failed_upstream);
+async fn read_state(state: &ProxyState) -> (usize, String) {
+    // let read_lock = state.upstream_addresses.read().await;
+    // let mut rng = rand::rngs::StdRng::from_entropy();
+    // let upstream_idx = rng.gen_range(0..read_lock.len());
+    // let upstream_ip = read_lock[upstream_idx].clone();
+    // log::debug!("upstream size = {}\n", read_lock.len());
+    // (upstream_idx, upstream_ip)
 }
 
-async fn connect_to_upstream(state: &RwLock<ProxyState>) -> Result<TcpStream, std::io::Error> {
+async fn write_state(state: &ProxyState, upstream_idx: usize) {
+    // let mut write_lock = state.upstream_addresses.write().await;
+    // log::info!(
+    //     "Upstream {} is down, removed from upstream list",
+    //     upstream_idx
+    // );
+    // let failed_upstream = write_lock.remove(upstream_idx);
+    // state.failed_upstream_addresses.write().await.push(failed_upstream);
+}
+
+async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
     let (mut upstream_idx, mut upstream_ip) = read_state(state).await;
     // TODO: implement failover (milestone 3)
     let stream = TcpStream::connect(upstream_ip).await;
@@ -148,7 +159,7 @@ async fn send_response(client_conn: &mut TcpStream, response: &http::Response<Ve
     }
 }
 
-async fn handle_connection(mut client_conn: TcpStream, state: &RwLock<ProxyState>) {
+async fn handle_connection(mut client_conn: TcpStream, state: &ProxyState) {
     let client_ip = client_conn.peer_addr().unwrap().ip().to_string();
     log::info!("Connection received from {}", client_ip);
 
