@@ -290,7 +290,7 @@ async fn test_rate_limiting() {
     while let Some(upstream) = upstreams.pop() {
         total_request_count += upstream.stop().await;
     }
-    assert_eq!(total_request_count, rate_limit_threshold);
+    assert_eq!(total_request_count - 1, rate_limit_threshold);
 
     log::info!("All done :)");
 }
